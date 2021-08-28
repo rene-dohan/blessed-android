@@ -86,7 +86,7 @@ public class BluetoothPeripheralManager {
     private @NotNull final BluetoothManager bluetoothManager;
     private @NotNull final BluetoothAdapter bluetoothAdapter;
     private @NotNull final BluetoothLeAdvertiser bluetoothLeAdvertiser;
-    private @NotNull final BluetoothGattServer bluetoothGattServer;
+    public @NotNull final BluetoothGattServer server;
     private @NotNull final BluetoothPeripheralManagerCallback callback;
     protected @NotNull final Queue<Runnable> commandQueue = new ConcurrentLinkedQueue<>();
     private @NotNull final HashMap<BluetoothGattCharacteristic, byte[]> writeLongCharacteristicTemporaryBytes = new HashMap<>();
@@ -110,7 +110,7 @@ public class BluetoothPeripheralManager {
                         return;
                     } else {
                         // This will lead to onConnectionStateChange be called again
-                        bluetoothGattServer.connect(device, false);
+                        server.connect(device, false);
                     }
 
                     handleDeviceConnected(device);
@@ -177,7 +177,7 @@ public class BluetoothPeripheralManager {
                     // If data is longer than MTU - 1, cut the array. Only ATT_MTU - 1 bytes can be sent in Long Read.
                     final byte[] value = copyOf(nonnullOf(characteristic.getValue()), offset, bluetoothCentral.getCurrentMtu() - 1);
 
-                    bluetoothGattServer.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value);
+                    server.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value);
                 }
             });
         }
@@ -212,7 +212,7 @@ public class BluetoothPeripheralManager {
                     }
 
                     if (responseNeeded) {
-                        bluetoothGattServer.sendResponse(device, requestId, status.value, offset, safeValue);
+                        server.sendResponse(device, requestId, status.value, offset, safeValue);
                     }
                 }
             });
@@ -234,7 +234,7 @@ public class BluetoothPeripheralManager {
                     // If data is longer than MTU - 1, cut the array. Only ATT_MTU - 1 bytes can be sent in Long Read.
                     final byte[] value = copyOf(nonnullOf(descriptor.getValue()), offset, bluetoothCentral.getCurrentMtu() - 1);
 
-                    bluetoothGattServer.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value);
+                    server.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value);
                 }
             });
         }
@@ -276,7 +276,7 @@ public class BluetoothPeripheralManager {
                     }
 
                     if (responseNeeded) {
-                        bluetoothGattServer.sendResponse(device, requestId, status.value, offset, safeValue);
+                        server.sendResponse(device, requestId, status.value, offset, safeValue);
                     }
 
                     if (status == GattStatus.SUCCESS && descriptor.getUuid().equals(CCC_DESCRIPTOR_UUID)) {
@@ -342,14 +342,14 @@ public class BluetoothPeripheralManager {
                                 }
                             }
                         }
-                        bluetoothGattServer.sendResponse(device, requestId, status.value, 0, null);
+                        server.sendResponse(device, requestId, status.value, 0, null);
                     }
                 });
             } else {
                 // Long write was cancelled, clean up already received bytes
                 writeLongCharacteristicTemporaryBytes.clear();
                 writeLongDescriptorTemporaryBytes.clear();
-                bluetoothGattServer.sendResponse(device, requestId, GattStatus.SUCCESS.value, 0, null);
+                server.sendResponse(device, requestId, GattStatus.SUCCESS.value, 0, null);
             }
         }
 
@@ -434,8 +434,7 @@ public class BluetoothPeripheralManager {
         this.bluetoothManager = Objects.requireNonNull(bluetoothManager, BLUETOOTH_MANAGER_IS_NULL);
         this.bluetoothAdapter = bluetoothManager.getAdapter();
         this.bluetoothLeAdvertiser = bluetoothAdapter.getBluetoothLeAdvertiser();
-        this.bluetoothGattServer = bluetoothManager.openGattServer(context, bluetoothGattServerCallback);
-
+        this.server = bluetoothManager.openGattServer(context, bluetoothGattServerCallback);
         // Register for broadcasts on BluetoothAdapter state change
         final IntentFilter filter = new IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED);
         context.registerReceiver(adapterStateReceiver, filter);
@@ -451,7 +450,7 @@ public class BluetoothPeripheralManager {
     public void close() {
         stopAdvertising();
         context.unregisterReceiver(adapterStateReceiver);
-        bluetoothGattServer.close();
+        server.close();
     }
 
     /**
@@ -497,13 +496,10 @@ public class BluetoothPeripheralManager {
     public boolean add(@NotNull final BluetoothGattService service) {
         Objects.requireNonNull(service, SERVICE_IS_NULL);
 
-        final boolean result = commandQueue.add(new Runnable() {
-            @Override
-            public void run() {
-                if (!bluetoothGattServer.addService(service)) {
-                    Logger.e(TAG,"adding service %s failed", service.getUuid());
-                    completedCommand();
-                }
+        final boolean result = commandQueue.add(() -> {
+            if (!server.addService(service)) {
+                Logger.e(TAG,"adding service %s failed", service.getUuid());
+                completedCommand();
             }
         });
 
@@ -524,14 +520,14 @@ public class BluetoothPeripheralManager {
     public boolean remove(@NotNull final BluetoothGattService service) {
         Objects.requireNonNull(service, SERVICE_IS_NULL);
 
-        return bluetoothGattServer.removeService(service);
+        return server.removeService(service);
     }
 
     /**
      * Remove all services
      */
     public void removeAllServices() {
-        bluetoothGattServer.clearServices();
+        server.clearServices();
     }
 
     /**
@@ -541,7 +537,7 @@ public class BluetoothPeripheralManager {
      */
     @NotNull
     public List<BluetoothGattService> getServices() {
-        return bluetoothGattServer.getServices();
+        return server.getServices();
     }
 
     /**
@@ -584,7 +580,7 @@ public class BluetoothPeripheralManager {
                 currentNotifyValue = value;
                 currentNotifyCharacteristic = characteristic;
                 characteristic.setValue(value);
-                if (!bluetoothGattServer.notifyCharacteristicChanged(bluetoothDevice, characteristic, confirm)) {
+                if (!server.notifyCharacteristicChanged(bluetoothDevice, characteristic, confirm)) {
                     Logger.e(TAG,"notifying characteristic changed failed for <%s>", characteristic.getUuid());
                     BluetoothPeripheralManager.this.completedCommand();
                 }
@@ -613,7 +609,7 @@ public class BluetoothPeripheralManager {
         Objects.requireNonNull(bluetoothDevice, DEVICE_IS_NULL);
 
         Logger.i(TAG,"cancelConnection with '%s' (%s)", bluetoothDevice.getName(), bluetoothDevice.getAddress());
-        bluetoothGattServer.cancelConnection(bluetoothDevice);
+        server.cancelConnection(bluetoothDevice);
     }
 
     private @NotNull List<BluetoothDevice> getConnectedDevices() {
